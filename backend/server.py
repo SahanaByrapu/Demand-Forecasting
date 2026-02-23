@@ -22,8 +22,9 @@ from tensorflow.keras import layers
 import json
 import zipfile
 import requests
-from emergentintegrations.llm.chat import LlmChat, UserMessage
 import asyncio
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -133,14 +134,14 @@ def download_m5_data():
     df = pd.DataFrame({
         'date': dates,
         'sales': sales,
-        'product_id': 'HOBBIES_1_001'
+        'product_id': 'PRODUCT_1_001'
     })
     
     file_path = DATA_DIR / "sales_data.csv"
     df.to_csv(file_path, index=False)
     return df
 
-def load_sales_data(product_id: str = "HOBBIES_1_001"):
+def load_sales_data(product_id: str = "PRODUCT_1_001"):
     """Load sales data for a specific product"""
     file_path = DATA_DIR / "sales_data.csv"
     if not file_path.exists():
@@ -416,96 +417,7 @@ async def train_models(request: TrainingRequest):
         logging.error(f"Training error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@api_router.post("/insights/generate")
-async def generate_insights(request: InsightRequest):
-    """Generate AI-powered insights using GPT-5.2"""
-    try:
-        api_key = os.environ.get('EMERGENT_LLM_KEY')
-        if not api_key:
-            raise HTTPException(status_code=500, detail="LLM API key not configured")
-        
-        # Prepare context for LLM
-        metrics_summary = "\n".join([
-            f"{m['model_name']}: RMSE={m['rmse']:.2f}, MAE={m['mae']:.2f}, MAPE={m['mape']:.2f}%, Time={m['training_time']:.2f}s"
-            for m in request.metrics
-        ])
-        
-        prompt = f"""Analyze these demand forecasting model results and provide insights:
 
-{metrics_summary}
-
-Context: {request.context}
-
-Please answer:
-1. Why does one model outperform others?
-2. What are the trade-offs between accuracy and interpretability?
-3. Where does each model fail or struggle?
-4. What is the business impact of using the best model?
-5. How can better forecasts improve costs, staffing, and prevent stockouts?
-6. Recommendations for real-time scenarios (retraining frequency, alert triggers)
-
-Provide a concise but comprehensive analysis."""
-        
-        chat = LlmChat(
-            api_key=api_key,
-            session_id=str(uuid.uuid4()),
-            system_message="You are an expert data scientist specializing in time-series forecasting and supply chain optimization."
-        ).with_model("openai", "gpt-5.2")
-        
-        user_message = UserMessage(text=prompt)
-        response = await chat.send_message(user_message)
-        
-        return {"insights": response}
-    except Exception as e:
-        logging.error(f"Insight generation error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@api_router.post("/business/impact")
-async def calculate_business_impact(request: BusinessImpactRequest):
-    """Calculate business impact of better forecasting"""
-    try:
-        # Current state
-        annual_stockouts = request.avg_daily_sales * 365 * request.current_stockout_rate
-        lost_revenue = annual_stockouts * request.product_margin
-        
-        # Improved state (assuming 50% reduction in stockouts with better forecasting)
-        improved_stockout_rate = request.current_stockout_rate * 0.5
-        improved_stockouts = request.avg_daily_sales * 365 * improved_stockout_rate
-        improved_lost_revenue = improved_stockouts * request.product_margin
-        
-        # Calculate savings
-        revenue_gain = lost_revenue - improved_lost_revenue
-        
-        # Storage cost optimization (assuming 20% reduction in excess inventory)
-        current_storage_cost = request.avg_daily_sales * 30 * request.storage_cost_per_unit
-        improved_storage_cost = current_storage_cost * 0.8
-        storage_savings = current_storage_cost - improved_storage_cost
-        
-        total_savings = revenue_gain + storage_savings
-        
-        return {
-            "current_annual_stockouts": round(annual_stockouts, 2),
-            "improved_annual_stockouts": round(improved_stockouts, 2),
-            "stockout_reduction": round((annual_stockouts - improved_stockouts) / annual_stockouts * 100, 2),
-            "revenue_gain": round(revenue_gain, 2),
-            "storage_savings": round(storage_savings, 2),
-            "total_annual_savings": round(total_savings, 2),
-            "roi_percentage": round((total_savings / (lost_revenue + 1)) * 100, 2)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@api_router.get("/data/historical")
-async def get_historical_data():
-    """Get historical sales data for visualization"""
-    try:
-        df = load_sales_data()
-        return {
-            "dates": df['date'].dt.strftime('%Y-%m-%d').tolist(),
-            "sales": df['sales'].tolist()
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.post("/accuracy/record", response_model=AccuracyRecord)
 async def create_accuracy_record(record: AccuracyRecordCreate):
@@ -717,6 +629,107 @@ async def simulate_accuracy_tracking():
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/business/impact")
+async def calculate_business_impact(request: BusinessImpactRequest):
+    """Calculate business impact of better forecasting"""
+    try:
+        # Current state
+        annual_stockouts = request.avg_daily_sales * 365 * request.current_stockout_rate
+        lost_revenue = annual_stockouts * request.product_margin
+        
+        # Improved state (assuming 50% reduction in stockouts with better forecasting)
+        improved_stockout_rate = request.current_stockout_rate * 0.5
+        improved_stockouts = request.avg_daily_sales * 365 * improved_stockout_rate
+        improved_lost_revenue = improved_stockouts * request.product_margin
+        
+        # Calculate savings
+        revenue_gain = lost_revenue - improved_lost_revenue
+        
+        # Storage cost optimization (assuming 20% reduction in excess inventory)
+        current_storage_cost = request.avg_daily_sales * 30 * request.storage_cost_per_unit
+        improved_storage_cost = current_storage_cost * 0.8
+        storage_savings = current_storage_cost - improved_storage_cost
+        
+        total_savings = revenue_gain + storage_savings
+        
+        return {
+            "current_annual_stockouts": round(annual_stockouts, 2),
+            "improved_annual_stockouts": round(improved_stockouts, 2),
+            "stockout_reduction": round((annual_stockouts - improved_stockouts) / annual_stockouts * 100, 2),
+            "revenue_gain": round(revenue_gain, 2),
+            "storage_savings": round(storage_savings, 2),
+            "total_annual_savings": round(total_savings, 2),
+            "roi_percentage": round((total_savings / (lost_revenue + 1)) * 100, 2)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/data/historical")
+async def get_historical_data():
+    """Get historical sales data for visualization"""
+    try:
+        df = load_sales_data()
+        return {
+            "dates": df['date'].dt.strftime('%Y-%m-%d').tolist(),
+            "sales": df['sales'].tolist()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/insights/generate")
+async def generate_insights(request: InsightRequest):
+    """Generate AI-powered insights using GPT-5.2"""
+    try:
+        api_key = os.environ.get('OPENAI_API_KEY')
+        if not api_key:
+            raise HTTPException(status_code=500, detail="LLM API key not configured")
+        
+        # Prepare context for LLM
+        metrics_summary = "\n".join([
+            f"{m['model_name']}: RMSE={m['rmse']:.2f}, MAE={m['mae']:.2f}, MAPE={m['mape']:.2f}%, Time={m['training_time']:.2f}s"
+            for m in request.metrics
+        ])
+        
+        prompt = f"""Analyze these demand forecasting model results and provide insights:
+
+            {metrics_summary}
+
+            Context: {request.context}
+
+            Please answer:
+            1. Why does one model outperform others?
+            2. What are the trade-offs between accuracy and interpretability?
+            3. Where does each model fail or struggle?
+            4. What is the business impact of using the best model?
+            5. How can better forecasts improve costs, staffing, and prevent stockouts?
+            6. Recommendations for real-time scenarios (retraining frequency, alert triggers)
+
+            Provide a concise but comprehensive analysis."""
+
+
+        chat_instance = ChatOpenAI(
+        model="gpt-4o",   # or gpt-4.1
+        api_key=OPENAI_API_KEY,
+        temperature=0.7
+         )
+        messages = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=user_prompt)
+         ]
+
+        response = await chat_instance.ainvoke(messages)
+        response_text = response.content
+
+    except Exception as e:
+        logging.error(f"Error calling LLM: {e}")
+        response_text = (
+        "I apologize, but I encountered an error processing your request. "
+        f"Please try again. Error: {str(e)}"
+        )
+
+        
+        return {"insights": response}
 
 # Include router
 app.include_router(api_router)
